@@ -14,9 +14,9 @@
 #         ProjectName=northstar \
 #         Environment=dev \
 #         GitHubOwner=YOUR_GITHUB_USERNAME \
-#         GitHubRepo=northstar-ai-platform \
+#         GitHubRepo=cs401r-<your-netid> \
 #         GitHubBranch=main \
-#         ArtifactsBucket=northstar-dev-artifacts \
+#         ArtifactsBucket=northstar-dev-cicd-artifacts-<account-id> \
 #         GitHubConnectionArn=arn:aws:codeconnections:us-east-1:<acct>:connection/<id> \
 #         SageMakerRoleArn=<ml_engineer_role_arn> \
 #     --capabilities CAPABILITY_NAMED_IAM
@@ -44,8 +44,9 @@ Parameters:
 
   GitHubRepo:
     Type: String
-    Default: northstar-ai-platform
-    Description: GitHub repository name
+    Description: >-
+      Your course repository name, cs401r-<your-netid>. No default on purpose:
+      a wrong name deploys cleanly and then fails at the Source stage.
 
   GitHubBranch:
     Type: String
@@ -143,6 +144,10 @@ Resources:
                   - sagemaker:CreateModelPackage
                   - sagemaker:DescribeModelPackage
                   - sagemaker:ListModelPackages
+                  # buildspec post_build rejects a package registered by a build
+                  # that then failed; also lets you write lineage metadata
+                  # (CustomerMetadataProperties) from CI.
+                  - sagemaker:UpdateModelPackage
                 Resource: !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:model-package*/*"
               - Effect: Allow
                 Action:
@@ -400,12 +405,14 @@ Resources:
                 Provider: Manual
                 Version: "1"
               Configuration:
-                # TODO: Replace with your team's email subscription ARN
                 NotificationArn: !Ref ModelApprovalTopic
-                CustomData: |
-                  Review model metrics before approving for production deployment.
-                  Check: AUC-ROC ≥ 0.72, Precision@Top10 ≥ 0.40
-                  Open SageMaker Model Registry to compare against champion model.
+                CustomData: >-
+                  The candidate passed every CI gate (precision@10% >= 0.50,
+                  recall@10% >= 0.25, AUC lift CI over the recency baseline
+                  excludes zero, AUC >= champion - 0.02). Read its metrics and
+                  slice_results in the Model Registry, review any fairness
+                  flag in the build log, then set the package to Approved or
+                  Rejected and approve or reject this action.
                 ExternalEntityLink: !Sub "https://${AWS::Region}.console.aws.amazon.com/sagemaker/home?region=${AWS::Region}#/model-registry"
               RunOrder: 1
 

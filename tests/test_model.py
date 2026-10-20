@@ -4,7 +4,8 @@ CS 401R Lab 4 Starter Kit
 
 These tests verify that the churn model meets production quality gates before
 it can be promoted through the Model Registry. They run in the CodeBuild
-pre_build phase against the latest trained model artifact.
+BUILD phase, after the SageMaker Pipeline has trained the model, against the
+artifact it produced and the evaluation_metrics.json it emitted.
 
 The key design decision here: we test the MODEL CONTRACT, not the model's
 internal implementation. These tests would catch:
@@ -13,10 +14,10 @@ internal implementation. These tests would catch:
   - A model artifact that can't load or can't produce valid probability scores
   - Prediction drift between model versions
 
-Run locally:
-    # First train a model or download from S3:
-    # aws s3 cp s3://your-bucket/artifacts/models/latest/model.xgb ./test_model.xgb
-    pytest tests/test_model.py -v --model-path ./test_model.xgb
+Run locally (after the local training run in the lab handout):
+    cp /tmp/out/model_metadata.json /tmp/model/
+    pytest tests/test_model.py -v --model-path /tmp/model/xgboost-model \
+        --eval-metrics-path /tmp/out/evaluation_metrics.json
 """
 
 import json
@@ -290,8 +291,14 @@ class TestModelRobustness:
         Increasing days_since_last_purchase (more dormant) should increase churn probability.
         This tests that the model learned the correct direction for the recency feature.
 
-        TODO: This is a monotonicity test — a form of model behavior testing that
-        goes beyond aggregate metrics. Implement it.
+        A monotonicity test: model behaviour testing beyond aggregate metrics.
+
+        A tree ensemble is piecewise constant, so neighbouring recency values
+        that fall in the same leaf interval score IDENTICALLY, and small dips
+        between neighbours are split noise. The test therefore allows ties and
+        dips up to MONO_TOLERANCE, and requires a substantial overall rise.
+        (An earlier version counted strictly increasing pairs and failed a
+        model scoring 0.230, 0.317, 0.307, 0.307, 0.633, 0.765 -- 2026-10-19.)
         """
         recency_values = [5, 30, 60, 90, 150, 200]
         scores = []
@@ -313,12 +320,18 @@ class TestModelRobustness:
             dmatrix = xgb.DMatrix(features, feature_names=FEATURE_COLUMNS)
             scores.append(float(loaded_model.predict(dmatrix)[0]))
 
-        # Scores should be generally increasing (more dormant = higher churn risk)
-        # Allow some non-monotonicity but the overall trend must be upward
-        increasing_pairs = sum(scores[i] < scores[i+1] for i in range(len(scores)-1))
-        assert increasing_pairs >= 4, (
-            f"Model is not monotone on recency. Scores: {[f'{s:.3f}' for s in scores]}. "
-            f"Only {increasing_pairs}/5 pairs are increasing — expected ≥ 4."
+        MONO_TOLERANCE = 0.02   # largest allowed dip between neighbours
+        MIN_RISE = 0.20         # 5 -> 200 days dormant must raise the score this much
+        shown = [f"{s:.3f}" for s in scores]
+        dips = [(recency_values[i], recency_values[i + 1], round(scores[i] - scores[i + 1], 3))
+                for i in range(len(scores) - 1) if scores[i + 1] < scores[i] - MONO_TOLERANCE]
+        assert not dips, (
+            f"Churn score falls by more than {MONO_TOLERANCE} as recency grows: {dips}. "
+            f"Scores {shown}."
+        )
+        assert scores[-1] - scores[0] >= MIN_RISE, (
+            f"Score rises only {scores[-1] - scores[0]:.3f} from {recency_values[0]} to "
+            f"{recency_values[-1]} days dormant (need >= {MIN_RISE}). Scores {shown}."
         )
 
     def test_prediction_stability_across_calls(self, loaded_model):

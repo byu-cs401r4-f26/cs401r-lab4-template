@@ -286,12 +286,20 @@ class TestFeatures:
             "you anchored to FEATURE_CUTOFF and not to today()"
         )
 
-    # TODO: Add a test proving no feature used post-cutoff data. Hint: join
-    # features back to processed and confirm each customer's max(purchase_date)
-    # is <= FEATURE_CUTOFF.
+    # TODO: Add a test proving no feature used post-cutoff data.
+    # Careful: processed/ CONTAINS the holdout purchases (after FEATURE_CUTOFF),
+    # because the label is built from them, so "every customer's max
+    # purchase_date is <= FEATURE_CUTOFF" is false on correct data. Test the
+    # FEATURES instead: recompute the time-sensitive ones (recency, tenure, the
+    # 30/90/180-day frequencies) from processed rows with purchase_date <=
+    # FEATURE_CUTOFF -- your data/feature_engineering.py functions do this --
+    # and assert they equal what the pipeline wrote to features/.
 
     # TODO: Add a freshness test. The pipeline should refuse to train on a
-    # feature set older than 48 hours. event_time is Fractional epoch seconds.
+    # feature set older than 48 hours. event_time is Fractional epoch seconds:
+    # the wall-clock time your Lab 2 feature job ran, NOT the cutoff T.
+    # Consequence: re-run the northstar-dev-feature-engineer Glue job (~90 s)
+    # before any session in which you will push, or this test fails the build.
 
 
 # ── Cross-dataset consistency ─────────────────────────────────────────────────

@@ -22,10 +22,15 @@ import pandas as pd
 import pytest
 
 # ── Import your feature engineering module ─────────────────────────────────────
-# Lab 2 implements feature engineering in PySpark (data/glue-scripts/feature_engineer.py),
+# Lab 2 implements feature engineering in PySpark (glue-scripts/feature_engineer.py),
 # which is awkward to unit test. For Lab 4 you extract the pure computation logic into
 # testable functions in data/feature_engineering.py that operate on pandas DataFrames,
 # then have the Glue job and these tests share that logic.
+#
+# Your pandas functions must compute EXACTLY what your Glue job computes --
+# same windows (purchase_date > T - N days), same definitions. In particular,
+# avg_basket_size_6m is ITEMS per order over 180 days (Lab 2 schema), not
+# dollars. Check the port against your Glue output on the full dataset.
 #
 # That refactor IS the assignment here: code you cannot test in isolation is code you
 # cannot gate a pipeline on.
@@ -38,16 +43,20 @@ try:
         build_churn_feature_set,
     )
     FEATURES_MODULE_AVAILABLE = True
-except ImportError:
+    _IMPORT_ERROR = None
+except ImportError as e:
     FEATURES_MODULE_AVAILABLE = False
+    _IMPORT_ERROR = e
 
 # A missing module is a FAILURE, not a skip. Silently skipping means `pytest tests/`
 # goes green having tested nothing, and a CI gate that cannot fail is not a gate.
 # Set ALLOW_MISSING_FEATURES_MODULE=1 only while you are still building it.
 if not FEATURES_MODULE_AVAILABLE and os.environ.get("ALLOW_MISSING_FEATURES_MODULE") != "1":
     pytest.fail(
-        "data/feature_engineering.py not found. Lab 4 Task 1 requires the Lab 2 feature "
-        "logic extracted into testable pandas functions. Set "
+        f"Could not import data.feature_engineering ({_IMPORT_ERROR!r}). Lab 4 Task 1 "
+        "requires the Lab 2 feature logic extracted into testable pandas functions in "
+        "data/feature_engineering.py. If the file exists, check that pytest.ini is at the "
+        "repo root and that the module itself imports cleanly. Set "
         "ALLOW_MISSING_FEATURES_MODULE=1 to defer this while developing.",
         pytrace=False,
     )
@@ -192,12 +201,16 @@ class TestFrequencyFeatures:
 class TestMonetaryFeatures:
 
     def test_avg_basket_size_correct(self, sample_transactions):
+        """avg_basket_size_6m = items bought in the last 180 days / orders in
+        the last 180 days (Lab 2: "Mean items per order, last 180 days").
+        Customer 3's four orders each have num_items=5, so 5.0. The dollar
+        figure, 365, is avg_order_value."""
         features = compute_monetary_features(sample_transactions, SNAPSHOT_DATE)
         cust3 = features[features["customer_id"] == "CUST-10000003"].iloc[0]
-        # Customer 3: (450 + 280) / 2 = 365
-        assert 360 <= cust3["avg_basket_size_6m"] <= 370, (
-            f"Expected ~365, got {cust3['avg_basket_size_6m']}"
+        assert cust3["avg_basket_size_6m"] == pytest.approx(5.0), (
+            f"Expected 5.0 items per order, got {cust3['avg_basket_size_6m']}"
         )
+        assert cust3["avg_order_value"] == pytest.approx(365.0)
 
     def test_total_spend_90d_is_sum_not_average(self, sample_transactions):
         features = compute_monetary_features(sample_transactions, SNAPSHOT_DATE)
@@ -234,7 +247,7 @@ class TestBehavioralFeatures:
     def test_multi_category_buyer_has_high_diversity(self, sample_transactions):
         features = compute_behavioral_features(sample_transactions)
         cust3 = features[features["customer_id"] == "CUST-10000003"].iloc[0]
-        # Customer 3 bought Cycling and Winter Sports
+        # Customer 3 bought four of the eight categories: 4 / 8 = 0.5
         assert cust3["category_diversity_score"] > 0.3, (
             f"Multi-category buyer should have higher diversity"
         )
@@ -262,7 +275,7 @@ class TestFullFeatureSet:
     ]
 
     def test_all_required_features_present(self, sample_customers, sample_transactions):
-        """build_churn_feature_set must produce all 12 required features."""
+        """build_churn_feature_set must produce every feature listed above."""
         features = build_churn_feature_set(
             customers=sample_customers,
             transactions=sample_transactions,

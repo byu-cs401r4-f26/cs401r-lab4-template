@@ -221,7 +221,7 @@ def main():
         "hyperparameters": json.loads(model.save_config()),
         "evaluation_metrics": metrics,
         "commit_sha": args.commit_sha,
-        "training_date": pd.Timestamp.utcnow().isoformat(),
+        "training_date": pd.Timestamp.now(tz="UTC").isoformat(),
     }
     with open(os.path.join(args.output_data_dir, "model_metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2, sort_keys=True)

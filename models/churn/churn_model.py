@@ -42,6 +42,10 @@ Test it locally before pushing:
         --model-dir /tmp/model --output-data-dir /tmp/out
 """
 
+# Keeps Lab 3 annotations like `-> tuple[np.ndarray, np.ndarray]` from being
+# evaluated, whatever Python the training container runs.
+from __future__ import annotations
+
 import numpy as np  # noqa: F401
 import pandas as pd  # noqa: F401
 import xgboost as xgb  # noqa: F401
@@ -72,10 +76,16 @@ def train(df: pd.DataFrame, seed: int = 42):
       1. X, y from FEATURE_COLUMNS and LABEL (handle missing values the way
          your Lab 3 preprocess_features() did)
       2. train_test_split(..., test_size=0.30, random_state=seed, stratify=y)
-         -- carry df["loyalty_tier"] through the same call if you report slices
+         -- carry the tier through the same call if you report slices. Pass
+         df["loyalty_tier"] (a Series) or .to_numpy(dtype=object); NOT
+         .values, which under pandas 3 is an Arrow array that
+         train_test_split cannot index
       3. train the XGBoost model (your Lab 3 train_model())
       4. train the recency-only baseline (train_recency_baseline())
-      5. metrics = evaluate_model(...)
+      5. metrics = evaluate_model(...)   # keep Lab 3's raise on a failed gate:
+                                         # it fails the training step, so a
+                                         # model that misses a gate is never
+                                         # registered
       6. return model, metrics
 
     Return an xgboost.Booster (what xgb.train() gives you). If you used

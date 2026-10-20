@@ -8,9 +8,12 @@ version: 0.2
 #
 # Stages:
 #   install   → Set up Python, install dependencies
-#   pre_build → Run unit and integration tests; fail fast if tests fail
-#   build     → Package model code, run data validation, trigger SageMaker pipeline
-#   post_build → Publish metrics to CloudWatch; notify on failure
+#   install    → pip install -r requirements.txt (requirements.txt ships in the kit)
+#   pre_build  → data and feature tests; a failure stops the build here
+#   build      → upsert + run the SageMaker Pipeline (train on spot, register),
+#                then the model gate (test_model.py, test_fairness.py)
+#   post_build → reject the package if the build failed after registering it;
+#                publish NorthStar/CI BuildSucceeded
 #
 # Required CodeBuild environment variables (set in the CodePipeline stack):
 #   PROJECT             northstar
@@ -181,6 +184,13 @@ phases:
 
           if [ "$STATUS" = "Succeeded" ]; then
             echo "Pipeline succeeded"
+            # Record the package this run registered. post_build rejects it
+            # if anything after this point fails the build (see post_build).
+            aws sagemaker list-pipeline-execution-steps \
+              --pipeline-execution-arn $EXECUTION_ARN \
+              --query "PipelineExecutionSteps[?starts_with(StepName,'RegisterChurnModel')].Metadata.RegisterModel.Arn" \
+              --output text > /tmp/model_package_arn.txt
+            echo "Registered: $(cat /tmp/model_package_arn.txt)"
             break
           elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Stopped" ]; then
             echo "Pipeline $STATUS - check SageMaker Studio for details"
@@ -242,10 +252,15 @@ phases:
         ls -la /tmp/model
 
       # One gate, one implementation, the same one a student runs locally.
-      - python -m pytest tests/test_model.py -v --tb=short
-            --eval-metrics-path /tmp/eval_metrics.json
-            --model-path /tmp/model/xgboost-model
-            --junitxml=reports/model_gate.xml
+      # tests/test_fairness.py (Task 1, you write it) runs here too, because it
+      # needs the metrics this run emitted. It flags, it does not block.
+      - |
+        FAIRNESS=""
+        if [ -f tests/test_fairness.py ]; then FAIRNESS=tests/test_fairness.py; fi
+        python -m pytest tests/test_model.py $FAIRNESS -v -rw --tb=short \
+          --eval-metrics-path /tmp/eval_metrics.json \
+          --model-path /tmp/model/xgboost-model \
+          --junitxml=reports/model_gate.xml
 
   post_build:
     commands:
@@ -256,6 +271,24 @@ phases:
       # phase boundaries, which is why every phase above re-derives ACCOUNT_ID
       # and DATA_BUCKET rather than trusting the previous one.
       - export COMMIT_SHA=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-8)
+
+      # ── Reject a package registered by a build that then failed ───────
+      # The SageMaker Pipeline registers the model (PendingManualApproval)
+      # BEFORE tests/test_model.py runs above. A model that fails a gate inside
+      # training is never registered -- the training step fails first -- but
+      # one that fails a CodeBuild-only test (model loading, monotonicity,
+      # champion regression) already sits in the registry. Without this step
+      # a red build leaves an approvable package behind (seen 2026-10-19, v7).
+      # post_build does run when the BUILD phase fails, so this is reached;
+      # a PRE_BUILD failure skips it, but then nothing was registered.
+      - |
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" = "0" ] && [ -s /tmp/model_package_arn.txt ]; then
+          PKG=$(cat /tmp/model_package_arn.txt)
+          aws sagemaker update-model-package --model-package-arn "$PKG" \
+            --model-approval-status Rejected \
+            --approval-description "Auto-rejected: CodeBuild build ${CODEBUILD_BUILD_ID} (commit ${COMMIT_SHA}) failed after registration."
+          echo "Rejected $PKG"
+        fi
 
       # ── Publish build outcome to CloudWatch ───────────────────────────
       # READ THIS BEFORE RELYING ON THIS METRIC.
